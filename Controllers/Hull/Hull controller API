@@ -1,0 +1,166 @@
+# Hull Controller API Reference
+
+## 1. Overview
+This API Reference defines all communication commands, telemetry responses, and diagnostics for the **Hull Controller**. It reflects the latest firmware updates including **diagnostic telemetry (0xF1)**, **voltage-compensated motor control**, and **expanded subsystem diagnostics**.
+
+---
+
+## 2. Communication Protocol
+
+### Bus
+- **Type:** I2C (Slave)
+- **Address:** `0x08`
+- **Data length:** Up to 32 bytes per transaction
+
+### System States
+| Code | State | Description |
+|------|--------|-------------|
+| `0x00` | NORMAL | All subsystems active |
+| `0x01` | ERROR | System fault or invalid command |
+| `0x02` | EMERGENCY_STOP | Motors and weapons disabled |
+
+### Data Encoding
+- All numeric values transmitted **LSB first**.
+- Text data returned as **ASCII strings** (null-terminated or truncated to 32 bytes).
+
+---
+
+## 3. Command Set
+
+### Movement and Tracks
+| Command | Hex | Parameters | Description |
+|----------|-----|-------------|-------------|
+| **CMD_TRACKS_MOVE** | `0x20` | `data` (0–200) → `-100..100` speed | Forward/backward control of both tracks. |
+| **CMD_TRACKS_TURN** | `0x21` | `data` (0–200) → `-100..100` speed | Turning control (arcade differential drive). |
+
+### Turret Control
+| Command | Hex | Parameters | Description |
+|----------|-----|-------------|-------------|
+| **CMD_TURRET_ROTATE** | `0x10` | `data` (0–200) | Rotates turret left/right. |
+| **CMD_TURRET_ELEVATE** | `0x11` | `data` (0–200) | Moves turret elevation up/down. |
+
+### Weapons
+| Command | Hex | Parameters | Description |
+|----------|-----|-------------|-------------|
+| **CMD_LASER_TOGGLE** | `0x30` | `0`=Off / `1`=On | Controls the laser emitter. |
+| **CMD_IR_TOGGLE** | `0x31` | `0`=Off / `1`=On | Toggles IR targeting LED. |
+| **CMD_CANNON_FIRE** | `0x32` | Duration (ms, 0–255) | Activates cannon relay for specified duration. |
+
+### Lighting
+| Command | Hex | Parameters | Description |
+|----------|-----|-------------|-------------|
+| **CMD_FRONT_LIGHTS** | `0x40` | `0`=Off / `1`=On / `2`=Blink | Front light control. |
+| **CMD_REAR_LIGHTS** | `0x41` | `0`=Off / `1`=On / `2`=Blink | Rear light control. |
+
+### System & Telemetry
+| Command | Hex | Response | Description |
+|----------|-----|-----------|-------------|
+| **CMD_GET_BATTERY** | `0xE0` | `[vL,vH,Type,Relay,0]` | Returns battery voltage ×100 (LSB/MSB) and relay state. |
+| **CMD_GET_STATUS** | `0xF0` | `[StatusByte]` | Bitwise system status summary. |
+| **CMD_GET_DIAGNOSTICS** | `0xF1` | ASCII text | Returns short diagnostic summary string (≤32 bytes). |
+| **CMD_EMERGENCY_STOP** | `0xFF` | `0`=Stop / `1`=Resume | Global safety halt or resume. |
+
+---
+
+## 4. Diagnostic Telemetry (0xF1)
+
+### Purpose
+Provides a **short text summary** of system health for remote monitoring over I2C.
+
+### Command
+```
+CMD_GET_DIAGNOSTICS = 0xF1
+```
+
+### Response Example
+```
+Batt=12.3V Tracks:L=10 R=12 Weapons:L=1 I=0 C=READY
+```
+
+### Response Format
+| Section | Example | Description |
+|----------|----------|-------------|
+| **Battery** | `Batt=12.3V` | Measured voltage (2-decimal precision). |
+| **Tracks** | `Tracks:L=10 R=12` | Current speed of left/right tracks. |
+| **Weapons** | `Weapons:L=1 I=0 C=READY` | Laser, IR, and cannon status. |
+
+### Notes
+- The string is **truncated** at 32 bytes for I2C safety.
+- Use `printSystemDiagnostics()` via Serial for detailed output.
+
+---
+
+## 5. Status and Error Reporting
+
+### Status Byte (0xF0)
+| Bit | Meaning | 1 = Active |
+|------|----------|-------------|
+| 0 | System OK | No faults detected |
+| 1 | Relay Enabled | Battery relay active |
+| 2 | Weapons Ready | Cannon armed and cooled |
+| 3 | Lights Active | Any light ON or blinking |
+| 4 | Motors Active | Any motor running |
+| 5 | Emergency Stop | Triggered state |
+| 6 | Error State | Invalid command or fault |
+| 7 | Reserved | Future use |
+
+### Error Handling
+- Invalid command → sets **Error State** and ignores subsequent commands until cleared.
+- Emergency stop disables all subsystems (motors, weapons, lights) until resumed.
+
+---
+
+## 6. Diagnostics Architecture
+
+Each subsystem exposes the following:
+```cpp
+String get<Module>DiagnosticString(); // Concise text for I2C
+void print<Module>Diagnostics();       // Detailed Serial info
+```
+The **diagnostics manager** (`diagnostics.cpp`) aggregates and manages telemetry.
+
+```cpp
+String getSystemDiagnosticsSummary(); // Builds short string for I2C (≤32 bytes)
+void printSystemDiagnostics();         // Full system printout via Serial
+```
+
+---
+
+## 7. Example: I2C Master Query
+
+### Python Example (Raspberry Pi)
+```python
+import smbus2, time
+bus = smbus2.SMBus(1)
+address = 0x08
+
+# Request diagnostics
+bus.write_byte(address, 0xF1)
+time.sleep(0.05)
+data = bus.read_i2c_block_data(address, 0, 32)
+print(''.join(chr(x) for x in data if x != 0))
+```
+
+Output:
+```
+Batt=12.1V Tracks:L=5 R=7 Weapons:L=1 I=1 C=COOL
+```
+
+---
+
+## 8. Future Expansion
+| Planned Command | Code | Description |
+|------------------|------|-------------|
+| **CMD_GET_ERROR_LOG** | `0xF2` | Retrieve EEPROM error log (future). |
+| **CMD_GET_TEMPERATURES** | `0xF3` | Returns thermal telemetry points. |
+| **CMD_GET_UPTIME** | `0xF4` | Returns system uptime counter. |
+
+---
+
+## 9. Revision History
+| Version | Date | Description |
+|----------|------|-------------|
+| v1.0 | Initial | Base Hull Controller API. |
+| v1.1 | Added `CMD_GET_DIAGNOSTICS`, voltage compensation, and subsystem diagnostics. |
+
+---
